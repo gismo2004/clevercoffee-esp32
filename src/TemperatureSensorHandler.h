@@ -14,7 +14,6 @@ class TemperatureSensorHandler
 
 public:
     enum SensorType {
-
         DALLAS,  // SensorType DALLAS
         TSIC_306 // SensorType TSIC (306)
     };

@@ -7,54 +7,50 @@
  */
 
 // Firmware version
-#define FW_VERSION    3
+#define FW_VERSION 3
 #define FW_SUBVERSION 1
-#define FW_HOTFIX     0
-#define FW_BRANCH     "MASTER"
+#define FW_HOTFIX 0
+#define FW_BRANCH "MASTER"
 
 // Libraries
 #include <ArduinoOTA.h>
 
-#include <WiFiManager.h>
-#include <U8g2lib.h>            // i2c display
+#include "PID_v1.h" // for PID calculation
 #include "TemperatureSensorHandler.h"
-#include "PID_v1.h"             // for PID calculation
+#include <U8g2lib.h> // i2c display
+#include <WiFiManager.h>
 
 // Includes
-#include "icon.h"               // user icons for display
-#include "languages.h"          // for language translation
-#include "Storage.h"
 #include "ISR.h"
+#include "Storage.h"
 #include "debugSerial.h"
-#include "pinmapping.h"
-#include "userConfig.h"         // needs to be configured by the user
 #include "defaults.h"
+#include "icon.h"      // user icons for display
+#include "languages.h" // for language translation
+#include "pinmapping.h"
+#include "userConfig.h" // needs to be configured by the user
 #include <os.h>
-
 
 hw_timer_t *timer = NULL;
 
-
 #if (BREWMODE == 2 || ONLYPIDSCALE == 1)
-    #include <HX711_ADC.h>
+#include <HX711_ADC.h>
 #endif
 
 // Version of userConfig need to match, checked by preprocessor
-#if (FW_VERSION != USR_FW_VERSION) || \
+#if (FW_VERSION != USR_FW_VERSION) ||       \
     (FW_SUBVERSION != USR_FW_SUBVERSION) || \
     (FW_HOTFIX != USR_FW_HOTFIX)
-    #error Version of userConfig file and main.cpp need to match!
+#error Version of userConfig file and main.cpp need to match!
 #endif
-
 
 MACHINE machine = (enum MACHINE)MACHINEID;
 
 #define HIGH_ACCURACY
 
 #include "PeriodicTrigger.h"
-PeriodicTrigger writeDebugTrigger(5000);  // returns true every 5000 ms
+PeriodicTrigger writeDebugTrigger(5000); // returns true every 5000 ms
 PeriodicTrigger logbrew(500);
-
 
 enum MachineState {
     kInit = 0,
@@ -79,7 +75,6 @@ unsigned long machinestatecoldmillis = 0;
 MachineState lastmachinestate = kInit;
 int lastmachinestatepid = -1;
 
-
 // Definitions below must be changed in the userConfig.h file
 int connectmode = CONNECTMODE;
 
@@ -101,7 +96,7 @@ const unsigned int maxWifiReconnects = MAXWIFIRECONNECTS;
 const char *hostname = HOSTNAME;
 const char *pass = PASS;
 unsigned long lastWifiConnectionAttempt = millis();
-unsigned int wifiReconnects = 0;  // actual number of reconnects
+unsigned int wifiReconnects = 0; // actual number of reconnects
 
 // OTA
 const char *OTAhost = OTAHOST;
@@ -118,22 +113,22 @@ const unsigned long intervalVoltagesensor = 200;
 int VoltageSensorON, VoltageSensorOFF;
 
 // QuickMill thermoblock steam-mode (only for BREWDETECTION = 3)
-const int maxBrewDurationForSteamModeQM_ON = 200;   // if brewtime is shorter steam-mode starts
-const int minPVSOffTimedForSteamModeQM_OFF = 1500;  // if PVS-off-time is longer steam-mode ends
-unsigned long timePVStoON = 0;      // time pinvoltagesensor switched to ON
-unsigned long lastTimePVSwasON = 0; // last time pinvoltagesensor was ON
-bool steamQM_active = false;        // steam-mode is active
-bool brewSteamDetectedQM = false;   // brew/steam detected, not sure yet what it is
+const int maxBrewDurationForSteamModeQM_ON = 200;  // if brewtime is shorter steam-mode starts
+const int minPVSOffTimedForSteamModeQM_OFF = 1500; // if PVS-off-time is longer steam-mode ends
+unsigned long timePVStoON = 0;                     // time pinvoltagesensor switched to ON
+unsigned long lastTimePVSwasON = 0;                // last time pinvoltagesensor was ON
+bool steamQM_active = false;                       // steam-mode is active
+bool brewSteamDetectedQM = false;                  // brew/steam detected, not sure yet what it is
 bool coolingFlushDetectedQM = false;
 
 // Pressure sensor
-#if (PRESSURESENSOR == 1)   // Pressure sensor connected
-    int offset = OFFSET;
-    int fullScale = FULLSCALE;
-    int maxPressure = MAXPRESSURE;
-    float inputPressure = 0;
-    const unsigned long intervalPressure = 200;
-    unsigned long previousMillisPressure;  // initialisation at the end of init()
+#if (PRESSURESENSOR == 1) // Pressure sensor connected
+int offset = OFFSET;
+int fullScale = FULLSCALE;
+int maxPressure = MAXPRESSURE;
+float inputPressure = 0;
+const unsigned long intervalPressure = 200;
+unsigned long previousMillisPressure; // initialisation at the end of init()
 #endif
 
 // Method forward declarations
@@ -145,7 +140,7 @@ void setBDPIDTunings();
 void loopcalibrate();
 void looppid();
 void printMachineState();
-char const* machinestateEnumToString(MachineState machinestate);
+char const *machinestateEnumToString(MachineState machinestate);
 void initSteamQM();
 boolean checkSteamOffQM();
 char *number2string(double in);
@@ -156,14 +151,13 @@ float filterPressureValue(float input);
 bool mqtt_publish(const char *reading, char *payload);
 void writeSysParamsToMQTT(void);
 
-
 // system parameters
-uint8_t pidON = 0;                 // 1 = control loop in closed loop
+uint8_t pidON = 0; // 1 = control loop in closed loop
 double brewSetPoint = SETPOINT;
 double brewTempOffset = TEMPOFFSET;
 double setPoint = brewSetPoint;
 double steamSetPoint = STEAMSETPOINT;
-uint8_t usePonM = 0;               // 1 = use PonM for cold start PID, 0 = use normal PID for cold start
+uint8_t usePonM = 0; // 1 = use PonM for cold start PID, 0 = use normal PID for cold start
 double steamKp = STEAMKP;
 double startKp = STARTKP;
 double startTn = STARTTN;
@@ -171,9 +165,9 @@ double aggKp = AGGKP;
 double aggTn = AGGTN;
 double aggTv = AGGTV;
 double aggIMax = AGGIMAX;
-double brewtime = BREW_TIME;                        // brewtime in s
-double preinfusion = PRE_INFUSION_TIME;             // preinfusion time in s
-double preinfusionpause = PRE_INFUSION_PAUSE_TIME;  // preinfusion pause time in s
+double brewtime = BREW_TIME;                       // brewtime in s
+double preinfusion = PRE_INFUSION_TIME;            // preinfusion time in s
+double preinfusionpause = PRE_INFUSION_PAUSE_TIME; // preinfusion pause time in s
 double weightSetpoint = SCALE_WEIGHTSETPOINT;
 
 // PID - values for offline brewdetection
@@ -183,14 +177,14 @@ double aggbTn = AGGBTN;
 double aggbTv = AGGBTV;
 
 #if aggbTn == 0
-    double aggbKi = 0;
+double aggbKi = 0;
 #else
-    double aggbKi = aggbKp / aggbTn;
+double aggbKi = aggbKp / aggbTn;
 #endif
 
 double aggbKd = aggbTv * aggbKp;
-double brewtimersoftware = BREW_SW_TIMER;  // use userConfig time until disabling BD PID
-double brewsensitivity = BREWSENSITIVITY;  // use userConfig brew detection sensitivity
+double brewtimersoftware = BREW_SW_TIMER; // use userConfig time until disabling BD PID
+double brewsensitivity = BREWSENSITIVITY; // use userConfig brew detection sensitivity
 
 // system parameter EEPROM storage wrappers (current value as pointer to variable, minimum, maximum, optional storage ID)
 SysPara<double> sysParaPidKpStart(&startKp, PID_KP_START_MIN, PID_KP_START_MAX, STO_ITEM_PID_KP_START);
@@ -216,25 +210,25 @@ SysPara<uint8_t> sysParaUsePonM(&usePonM, 0, 1, STO_ITEM_PID_START_PONM);
 SysPara<uint8_t> sysParaUseBDPID(&useBDPID, 0, 1, STO_ITEM_USE_BD_PID);
 
 // Other variables
-int relayON, relayOFF;           // used for relay trigger type. Do not change!
-boolean coldstart = true;        // true = Rancilio started for first time
-boolean emergencyStop = false;   // Emergency stop if temperature is too high
-double EmergencyStopTemp = 120;  // Temp EmergencyStopTemp
+int relayON, relayOFF;                        // used for relay trigger type. Do not change!
+boolean coldstart = true;                     // true = Rancilio started for first time
+boolean emergencyStop = false;                // Emergency stop if temperature is too high
+double EmergencyStopTemp = 120;               // Temp EmergencyStopTemp
 float inX = 0, inY = 0, inOld = 0, inSum = 0; // used for filterPressureValue()
-int signalBars = 0;              // used for getSignalStrength()
+int signalBars = 0;                           // used for getSignalStrength()
 boolean brewDetected = 0;
 boolean setupDone = false;
-int backflushON = 0;             // 1 = backflush mode active
-int flushCycles = 0;             // number of active flush cycles
-int backflushState = 10;         // counter for state machine
+int backflushON = 0;     // 1 = backflush mode active
+int flushCycles = 0;     // number of active flush cycles
+int backflushState = 10; // counter for state machine
 
 unsigned long timeBrewDetection = 0;
-int isBrewDetected = 0;                 // flag is set if brew was detected
+int isBrewDetected = 0; // flag is set if brew was detected
 
 // Brewing, 1 = Normal Preinfusion , 2 = Scale & Shottimer = 2
 #include "brewscaleini.h"
 
-int pidMode = 1;    // 1 = Automatic, 0 = Manual
+int pidMode = 1; // 1 = Automatic, 0 = Manual
 
 double setPointTemp;
 double previousInput = 0;
@@ -255,15 +249,15 @@ void OnBrewSensorValuesUpdate(float temp, float rate, bool error) {
 }
 
 #if startTn == 0
-    double startKi = 0;
+double startKi = 0;
 #else
-    double startKi = startKp / startTn;
+double startKi = startKp / startTn;
 #endif
 
 #if aggTn == 0
-    double aggKi = 0;
+double aggKi = 0;
 #else
-    double aggKi = aggKp / aggTn;
+double aggKi = aggKp / aggTn;
 #endif
 
 double aggKd = aggTv * aggKp;
@@ -302,7 +296,6 @@ std::vector<mqttVars_t> mqttVars = {
 // Embedded HTTP Server
 #include "EmbeddedWebserver.h"
 
-
 enum SectionNames {
     sPIDSection,
     sTempSection,
@@ -319,7 +312,8 @@ unsigned long tempEventInterval = 1000;
  * @brief Get Wifi signal strength and set signalBars for display
  */
 void getSignalStrength() {
-    if (offlineMode == 1) return;
+    if (offlineMode == 1)
+        return;
 
     long rssi;
 
@@ -344,70 +338,69 @@ void getSignalStrength() {
 
 // Display define & template
 #if OLED_DISPLAY == 1
-    U8G2_SH1106_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, U8X8_PIN_NONE, PIN_I2CSCL, PIN_I2CSDA);  // e.g. 1.3"
+U8G2_SH1106_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, U8X8_PIN_NONE, PIN_I2CSCL, PIN_I2CSDA); // e.g. 1.3"
 #endif
 #if OLED_DISPLAY == 2
-    U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, U8X8_PIN_NONE, PIN_I2CSCL, PIN_I2CSDA);  // e.g. 0.96"
+U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, U8X8_PIN_NONE, PIN_I2CSCL, PIN_I2CSDA); // e.g. 0.96"
 #endif
 
 // Update for Display
-unsigned long previousMillisDisplay;  // initialisation at the end of init()
+unsigned long previousMillisDisplay; // initialisation at the end of init()
 const unsigned long intervalDisplay = 500;
 
 // Horizontal or vertical display
 #if (OLED_DISPLAY == 1 || OLED_DISPLAY == 2)
-    #if (DISPLAYTEMPLATE < 20)  // horizontal templates
-        #include "display.h"
-    #endif
-
-    #if (DISPLAYTEMPLATE >= 20)  // vertical templates
-        #include "Displayrotateupright.h"
-    #endif
-
-    #if (DISPLAYTEMPLATE == 1)
-        #include "Displaytemplatestandard.h"
-    #endif
-
-    #if (DISPLAYTEMPLATE == 2)
-        #include "Displaytemplateminimal.h"
-    #endif
-
-    #if (DISPLAYTEMPLATE == 3)
-        #include "Displaytemplatetemponly.h"
-    #endif
-
-    #if (DISPLAYTEMPLATE == 4)
-        #include "Displaytemplatescale.h"
-    #endif
-
-    #if (DISPLAYTEMPLATE == 20)
-        #include "Displaytemplateupright.h"
-    #endif
+#if (DISPLAYTEMPLATE < 20) // horizontal templates
+#include "display.h"
 #endif
 
+#if (DISPLAYTEMPLATE >= 20) // vertical templates
+#include "Displayrotateupright.h"
+#endif
 
-#if (PRESSURESENSOR == 1)  // Pressure sensor connected
-    /**
-     * Pressure sensor
-     * Verify before installation: meassured analog input value (should be 3,300 V
-     * for 3,3 V supply) and respective ADC value (3,30 V = 1023)
-     */
-    void checkPressure() {
-        float inputPressureFilter = 0;
-        unsigned long currentMillisPressure = millis();
+#if (DISPLAYTEMPLATE == 1)
+#include "Displaytemplatestandard.h"
+#endif
 
-        if (currentMillisPressure - previousMillisPressure >= intervalPressure) {
-            previousMillisPressure = currentMillisPressure;
+#if (DISPLAYTEMPLATE == 2)
+#include "Displaytemplateminimal.h"
+#endif
 
-            inputPressure =
-                ((analogRead(PIN_PRESSURESENSOR) - offset) * maxPressure * 0.0689476) /
-                (fullScale - offset);   // pressure conversion and unit
-                                        // conversion [psi] -> [bar]
-            inputPressureFilter = filterPressureValue(inputPressure);
+#if (DISPLAYTEMPLATE == 3)
+#include "Displaytemplatetemponly.h"
+#endif
 
-            debugPrintf("pressure raw / filtered: %f / %f\n", inputPressure, inputPressureFilter);
-        }
+#if (DISPLAYTEMPLATE == 4)
+#include "Displaytemplatescale.h"
+#endif
+
+#if (DISPLAYTEMPLATE == 20)
+#include "Displaytemplateupright.h"
+#endif
+#endif
+
+#if (PRESSURESENSOR == 1) // Pressure sensor connected
+/**
+ * Pressure sensor
+ * Verify before installation: meassured analog input value (should be 3,300 V
+ * for 3,3 V supply) and respective ADC value (3,30 V = 1023)
+ */
+void checkPressure() {
+    float inputPressureFilter = 0;
+    unsigned long currentMillisPressure = millis();
+
+    if (currentMillisPressure - previousMillisPressure >= intervalPressure) {
+        previousMillisPressure = currentMillisPressure;
+
+        inputPressure =
+            ((analogRead(PIN_PRESSURESENSOR) - offset) * maxPressure * 0.0689476) /
+            (fullScale - offset); // pressure conversion and unit
+                                  // conversion [psi] -> [bar]
+        inputPressureFilter = filterPressureValue(inputPressure);
+
+        debugPrintf("pressure raw / filtered: %f / %f\n", inputPressure, inputPressureFilter);
     }
+}
 #endif
 
 // Emergency stop if temp is too high
@@ -426,17 +419,17 @@ void testEmergencyStop() {
  * @brief Switch to offline mode if maxWifiReconnects were exceeded during boot
  */
 void initOfflineMode() {
-    #if OLED_DISPLAY != 0
-        displayMessage("", "", "", "", "Begin Fallback,", "No Wifi");
-    #endif
+#if OLED_DISPLAY != 0
+    displayMessage("", "", "", "", "Begin Fallback,", "No Wifi");
+#endif
 
     debugPrintln("Start offline mode with eeprom values, no wifi :(");
     offlineMode = 1;
 
     if (readSysParamsFromStorage() != 0) {
-        #if OLED_DISPLAY != 0
-            displayMessage("", "", "", "", "No eeprom,", "Values");
-        #endif
+#if OLED_DISPLAY != 0
+        displayMessage("", "", "", "", "No eeprom,", "Values");
+#endif
 
         debugPrintln(
             "No working eeprom value, I am sorry, but use default offline value "
@@ -450,7 +443,8 @@ void initOfflineMode() {
  * @brief Check if Wifi is connected, if not reconnect abort function if offline, or brew is running
  */
 void checkWifi() {
-    if (offlineMode == 1 || brewcounter > 11) return;
+    if (offlineMode == 1 || brewcounter > 11)
+        return;
 
     /* if coldstart ist still true when checkWifi() is called, then there was no WIFI connection
      * at boot -> connect or offlinemode
@@ -459,15 +453,15 @@ void checkWifi() {
         if ((millis() - lastWifiConnectionAttempt >= wifiConnectionDelay) && (wifiReconnects <= maxWifiReconnects)) {
             int statusTemp = WiFi.status();
 
-            if (statusTemp != WL_CONNECTED) {  // check WiFi connection status
+            if (statusTemp != WL_CONNECTED) { // check WiFi connection status
                 lastWifiConnectionAttempt = millis();
                 wifiReconnects++;
                 debugPrintf("Attempting WIFI reconnection: %i\n", wifiReconnects);
 
                 if (!setupDone) {
-                    #if OLED_DISPLAY != 0
-                        displayMessage("", "", "", "", langstring_wifirecon, String(wifiReconnects));
-                    #endif
+#if OLED_DISPLAY != 0
+                    displayMessage("", "", "", "", langstring_wifirecon, String(wifiReconnects));
+#endif
                 }
 
                 wm.disconnect();
@@ -483,16 +477,14 @@ void checkWifi() {
             }
         }
 
-        yield();  // Prevent WDT trigger
+        yield(); // Prevent WDT trigger
     } while (!setupDone && wifiReconnects < maxWifiReconnects && WiFi.status() != WL_CONNECTED);
 
-
-    if (wifiReconnects >= maxWifiReconnects && !setupDone) {  // no wifi connection after boot, initiate offline mode
+    if (wifiReconnects >= maxWifiReconnects && !setupDone) { // no wifi connection after boot, initiate offline mode
         // (only directly after boot)
         initOfflineMode();
     }
 }
-
 
 char number2string_double[22];
 
@@ -502,7 +494,6 @@ char *number2string(double in) {
     return number2string_double;
 }
 
-
 char number2string_float[22];
 
 char *number2string(float in) {
@@ -510,7 +501,6 @@ char *number2string(float in) {
 
     return number2string_float;
 }
-
 
 char number2string_int[22];
 
@@ -520,7 +510,6 @@ char *number2string(int in) {
     return number2string_int;
 }
 
-
 char number2string_uint[22];
 
 char *number2string(unsigned int in) {
@@ -529,12 +518,12 @@ char *number2string(unsigned int in) {
     return number2string_uint;
 }
 
-
 /**
  * @brief Brewdetection
  */
 void brewDetection() {
-    if (brewsensitivity == 0) return;  // abort brewdetection if deactivated
+    if (brewsensitivity == 0)
+        return; // abort brewdetection if deactivated
 
     // Brew detection: 1 = software solution, 2 = hardware, 3 = voltage sensor
     if (Brewdetection == 1) {
@@ -544,12 +533,12 @@ void brewDetection() {
 
         // deactivate brewtimer after end of brewdetection pid
         if (millis() - timeBrewDetection > brewtimersoftware * 1000 && isBrewDetected == 1) {
-            isBrewDetected = 0;  // rearm brewDetection
+            isBrewDetected = 0; // rearm brewDetection
             timeBrewed = 0;
         }
     } else if (Brewdetection == 2) {
         if (millis() - timeBrewDetection > brewtimersoftware * 1000 && isBrewDetected == 1) {
-            isBrewDetected = 0;  // rearm brewDetection
+            isBrewDetected = 0; // rearm brewDetection
         }
     } else if (Brewdetection == 3) {
         // timeBrewed counter
@@ -560,9 +549,9 @@ void brewDetection() {
 
         // OFF: reset brew
         if ((digitalRead(PIN_BREWSWITCH) == VoltageSensorOFF) && (brewDetected == 1 || coolingFlushDetectedQM == true)) {
-            isBrewDetected = 0;  // rearm brewDetection
+            isBrewDetected = 0; // rearm brewDetection
             brewDetected = 0;
-            timePVStoON = timeBrewed;  // for QuickMill
+            timePVStoON = timeBrewed; // for QuickMill
             timeBrewed = 0;
             startingTime = 0;
             coolingFlushDetectedQM = false;
@@ -571,83 +560,81 @@ void brewDetection() {
     }
 
     // Activate brew detection
-    if (Brewdetection == 1) {  // SW BD
+    if (Brewdetection == 1) { // SW BD
         // BD PID only +/- 4 °C, no detection if HW was active
         if (tempRateAverage <= -brewsensitivity && isBrewDetected == 0 && (fabs(temperature - brewSetPoint) < 5)) {
             debugPrintln("SW Brew detected");
             timeBrewDetection = millis();
             isBrewDetected = 1;
         }
-    } else if (Brewdetection == 2) {  // HW BD
+    } else if (Brewdetection == 2) { // HW BD
         if (brewcounter > 10 && brewDetected == 0 && brewsensitivity != 0) {
             debugPrintln("HW Brew detected");
             timeBrewDetection = millis();
             isBrewDetected = 1;
             brewDetected = 1;
         }
-    } else if (Brewdetection == 3) {  // voltage sensor
+    } else if (Brewdetection == 3) { // voltage sensor
         switch (machine) {
-            case QuickMill:
-                if (!coolingFlushDetectedQM) {
-                    int pvs = digitalRead(PIN_BREWSWITCH);
+        case QuickMill:
+            if (!coolingFlushDetectedQM) {
+                int pvs = digitalRead(PIN_BREWSWITCH);
 
-                    if (pvs == VoltageSensorON && brewDetected == 0 &&
-                        brewSteamDetectedQM == 0 && !steamQM_active) {
-                        timeBrewDetection = millis();
-                        timePVStoON = millis();
-                        isBrewDetected = 1;
-                        brewDetected = 0;
-                        lastbrewTime = 0;
-                        brewSteamDetectedQM = 1;
-                        debugPrintln("Quick Mill: setting brewSteamDetectedQM = 1");
-                        logbrew.reset();
-                    }
+                if (pvs == VoltageSensorON && brewDetected == 0 &&
+                    brewSteamDetectedQM == 0 && !steamQM_active) {
+                    timeBrewDetection = millis();
+                    timePVStoON = millis();
+                    isBrewDetected = 1;
+                    brewDetected = 0;
+                    lastbrewTime = 0;
+                    brewSteamDetectedQM = 1;
+                    debugPrintln("Quick Mill: setting brewSteamDetectedQM = 1");
+                    logbrew.reset();
+                }
 
-                    const unsigned long minBrewDurationForSteamModeQM_ON = 50;
-                    if (brewSteamDetectedQM == 1 && millis()-timePVStoON > minBrewDurationForSteamModeQM_ON)
-                    {
+                const unsigned long minBrewDurationForSteamModeQM_ON = 50;
+                if (brewSteamDetectedQM == 1 && millis() - timePVStoON > minBrewDurationForSteamModeQM_ON) {
 
-                        if (pvs == VoltageSensorOFF) {
+                    if (pvs == VoltageSensorOFF) {
+                        brewSteamDetectedQM = 0;
+
+                        if (millis() - timePVStoON < maxBrewDurationForSteamModeQM_ON) {
+                            debugPrintln("Quick Mill: steam-mode detected");
+                            initSteamQM();
+                        } else {
+                            debugPrintf("*** ERROR: QuickMill: neither brew nor steam\n");
+                        }
+                    } else if (millis() - timePVStoON > maxBrewDurationForSteamModeQM_ON) {
+                        if (temperature < brewSetPoint + 2) {
+                            debugPrintln("Quick Mill: brew-mode detected");
+                            startingTime = timePVStoON;
+                            brewDetected = 1;
                             brewSteamDetectedQM = 0;
-
-                            if (millis() - timePVStoON < maxBrewDurationForSteamModeQM_ON) {
-                                debugPrintln("Quick Mill: steam-mode detected");
-                                initSteamQM();
-                            } else {
-                                debugPrintf("*** ERROR: QuickMill: neither brew nor steam\n");
-                            }
-                        } else if (millis() - timePVStoON > maxBrewDurationForSteamModeQM_ON) {
-                            if (temperature < brewSetPoint + 2) {
-                                debugPrintln("Quick Mill: brew-mode detected");
-                                startingTime = timePVStoON;
-                                brewDetected = 1;
-                                brewSteamDetectedQM = 0;
-                            } else {
-                                debugPrintln("Quick Mill: cooling-flush detected");
-                                coolingFlushDetectedQM = true;
-                                brewSteamDetectedQM = 0;
-                            }
+                        } else {
+                            debugPrintln("Quick Mill: cooling-flush detected");
+                            coolingFlushDetectedQM = true;
+                            brewSteamDetectedQM = 0;
                         }
                     }
                 }
-                break;
+            }
+            break;
 
-            // no Quickmill:
-            default:
-                previousMillisVoltagesensorreading = millis();
+        // no Quickmill:
+        default:
+            previousMillisVoltagesensorreading = millis();
 
-                if (digitalRead(PIN_BREWSWITCH) == VoltageSensorON && brewDetected == 0) {
-                    debugPrintln("HW Brew - Voltage Sensor - Start");
-                    timeBrewDetection = millis();
-                    startingTime = millis();
-                    isBrewDetected = 1;
-                    brewDetected = 1;
-                    lastbrewTime = 0;
-                }
+            if (digitalRead(PIN_BREWSWITCH) == VoltageSensorON && brewDetected == 0) {
+                debugPrintln("HW Brew - Voltage Sensor - Start");
+                timeBrewDetection = millis();
+                startingTime = millis();
+                isBrewDetected = 1;
+                brewDetected = 1;
+                lastbrewTime = 0;
+            }
         }
     }
 }
-
 
 /**
  * @brief Filter input value using exponential moving average filter (using fixed coefficients)
@@ -662,7 +649,6 @@ float filterPressureValue(float input) {
 
     return inSum;
 }
-
 
 /**
  * @brief steamON & Quickmill
@@ -681,7 +667,7 @@ void checkSteamON() {
     // monitor QuickMill thermoblock steam-mode
     if (machine == QuickMill) {
         if (steamQM_active == true) {
-            if (checkSteamOffQM() == true) {  // if true: steam-mode can be turned off
+            if (checkSteamOffQM() == true) { // if true: steam-mode can be turned off
                 steamON = 0;
                 steamQM_active = false;
                 lastTimePVSwasON = 0;
@@ -700,15 +686,17 @@ void checkSteamON() {
 
 void setEmergencyStopTemp() {
     if (machinestate == kSteam || machinestate == kCoolDown) {
-        if (EmergencyStopTemp != 145) EmergencyStopTemp = 145;
+        if (EmergencyStopTemp != 145)
+            EmergencyStopTemp = 145;
     } else {
-        if (EmergencyStopTemp != 120) EmergencyStopTemp = 120;
+        if (EmergencyStopTemp != 120)
+            EmergencyStopTemp = 120;
     }
 }
 
 void initSteamQM() {
     // Initialize monitoring for steam switch off for QuickMill thermoblock
-    lastTimePVSwasON = millis();  // time when pinvoltagesensor changes from ON to OFF
+    lastTimePVSwasON = millis(); // time when pinvoltagesensor changes from ON to OFF
     steamQM_active = true;
     timePVStoON = 0;
     steamON = 1;
@@ -736,280 +724,274 @@ boolean checkSteamOffQM() {
  */
 void machinestatevoid() {
     switch (machinestate) {
-        case kInit:
-            // Prevent coldstart leave by temperature 222
-            if (temperature < (brewSetPoint - 1) || temperature < 150) {
+    case kInit:
+        // Prevent coldstart leave by temperature 222
+        if (temperature < (brewSetPoint - 1) || temperature < 150) {
+            machinestate = kColdStart;
+            debugPrintf("%d\n", temperature);
+            debugPrintf("%d\n", machinestate);
+
+            // some users have 100 % Output in kInit / KColdstart, reset PID
+            pidMode = 0;
+            bPID.SetMode(pidMode);
+            pidOutput = 0;
+            digitalWrite(PIN_HEATER, LOW); // Stop heating
+
+            // start PID
+            pidMode = 1;
+            bPID.SetMode(pidMode);
+        }
+
+        break;
+
+    case kColdStart:
+        /* One high temperature let the state jump to 19.
+         * switch (machinestatecold) prevent it, we wait 10 sec with new state.
+         * during the 10 sec the temperature has to be temperature >= (BrewSetPoint-1),
+         * If not, reset machinestatecold
+         */
+        switch (machinestatecold) {
+        case 0:
+            if (temperature >= (brewSetPoint - 1) && temperature < 150) {
+                machinestatecoldmillis = millis(); // get millis for interval calc
+                machinestatecold = 10;             // new state
+                debugPrintln(
+                    "temperature >= (BrewSetPoint-1), wait 10 sec before machinestate SetPointNegative");
+            }
+            break;
+
+        case 10:
+            if (temperature < (brewSetPoint - 1)) {
+                machinestatecold = 0; //  temperature was only one time above
+                                      //  BrewSetPoint, reset machinestatecold
+                debugPrintln("Reset timer for machinestate SetPointNegative: temperature < (BrewSetPoint-1)");
+
+                break;
+            }
+
+            if (machinestatecoldmillis + 10 * 1000 < millis()) // 10 sec temperature above BrewSetPoint, no set new state
+            {
+                machinestate = kSetPointNegative;
+                debugPrintln("5 sec temperature >= (BrewSetPoint-1) finished, switch to state SetPointNegative");
+            }
+            break;
+        }
+
+        if ((timeBrewed > 0 && ONLYPID == 1) || // timeBrewed with Only PID
+            (ONLYPID == 0 && brewcounter > 10 && brewcounter <= 42)) {
+            machinestate = kBrew;
+        }
+
+        if (steamON == 1) {
+            machinestate = kSteam;
+        }
+
+        if (backflushON || backflushState > 10) {
+            machinestate = kBackflush;
+        }
+        break;
+
+    // Setpoint is below current temperature
+    case kSetPointNegative:
+        brewDetection();
+
+        if (temperature >= (brewSetPoint)) {
+            machinestate = kPidNormal;
+        }
+
+        if ((timeBrewed > 0 && ONLYPID == 1) || // timeBrewed with Only PID
+            (ONLYPID == 0 && brewcounter > 10 && brewcounter <= 42)) {
+            machinestate = kBrew;
+        }
+
+        if (backflushON || backflushState > 10) {
+            machinestate = kBackflush;
+        }
+
+        if (steamON == 1) {
+            machinestate = kSteam;
+        }
+        break;
+
+    case kPidNormal:
+        brewDetection(); // if brew detected, set BD PID values (if enabled)
+
+        if ((timeBrewed > 0 && ONLYPID == 1) || // timeBrewed with Only PID
+            (ONLYPID == 0 && brewcounter > 10 && brewcounter <= 42)) {
+            machinestate = kBrew;
+        }
+
+        if (steamON == 1) {
+            machinestate = kSteam;
+        }
+
+        if (backflushON || backflushState > 10) {
+            machinestate = kBackflush;
+        }
+
+        if (emergencyStop) {
+            machinestate = kEmergencyStop;
+        }
+        break;
+
+    case kBrew:
+        brewDetection();
+
+        // Output brew time, temp and tempRateAverage during brew
+        if (BREWDETECTION == 1 && logbrew.check()) {
+            debugPrintf("(tB,T,hra) --> %5.2f %6.2f %8.2f\n",
+                        (double)(millis() - startingTime) / 1000, temperature, tempRateAverage);
+        }
+
+        if ((timeBrewed == 0 && Brewdetection == 3 && ONLYPID == 1) ||  // OnlyPID+: Voltage sensor BD timeBrewed == 0 -> switch is off again
+            ((brewcounter == 10 || brewcounter == 43) && ONLYPID == 0)) // Hardware BD
+        {
+            // delay shot timer display for voltage sensor or hw brew toggle switch (brew counter)
+            machinestate = kShotTimerAfterBrew;
+            lastbrewTimeMillis = millis();                                      // for delay
+        } else if (Brewdetection == 1 && ONLYPID == 1 && isBrewDetected == 0) { // SW BD, kBrew was active for set time
+            // when Software brew is finished, direct to PID BD
+            machinestate = kBrewDetectionTrailing;
+        }
+
+        if (steamON == 1) {
+            machinestate = kSteam;
+        }
+
+        if (emergencyStop) {
+            machinestate = kEmergencyStop;
+        }
+        break;
+
+    case kShotTimerAfterBrew:
+        brewDetection();
+
+        if (millis() - lastbrewTimeMillis > BREWSWITCHDELAY) {
+            debugPrintf("Shot time: %4.1f s\n", lastbrewTime / 1000);
+            machinestate = kBrewDetectionTrailing;
+            lastbrewTime = 0;
+        }
+
+        if (steamON == 1) {
+            machinestate = kSteam;
+        }
+
+        if (backflushON || backflushState > 10) {
+            machinestate = kBackflush;
+        }
+
+        if (emergencyStop) {
+            machinestate = kEmergencyStop;
+        }
+        break;
+
+    case kBrewDetectionTrailing:
+        brewDetection();
+
+        if (isBrewDetected == 0) {
+            machinestate = kPidNormal;
+        }
+
+        if ((timeBrewed > 0 && ONLYPID == 1 && Brewdetection == 3) || // Allow brew directly after BD only when using OnlyPID AND hardware brew switch detection
+            (ONLYPID == 0 && brewcounter > 10 && brewcounter <= 42)) {
+            machinestate = kBrew;
+        }
+
+        if (steamON == 1) {
+            machinestate = kSteam;
+        }
+
+        if (backflushON || backflushState > 10) {
+            machinestate = kBackflush;
+        }
+
+        if (emergencyStop) {
+            machinestate = kEmergencyStop;
+        }
+        break;
+
+    case kSteam:
+        if (steamON == 0) {
+            machinestate = kCoolDown;
+        }
+
+        if (emergencyStop) {
+            machinestate = kEmergencyStop;
+        }
+
+        if (backflushON || backflushState > 10) {
+            machinestate = kBackflush;
+        }
+        break;
+
+    case kCoolDown:
+        if (Brewdetection == 2 || Brewdetection == 3) {
+            /* For quickmill:  steam detection only via switch, calling
+             * brewDetection() detects new steam request
+             */
+            brewDetection();
+        }
+
+        if (Brewdetection == 1 && ONLYPID == 1) {
+            // if machine cooled down to 2°C above setpoint, enabled PID again
+            if (tempRateAverage > 0 && temperature < brewSetPoint + 2) {
+                machinestate = kPidNormal;
+            }
+        }
+
+        if ((Brewdetection == 3 || Brewdetection == 2) && temperature < brewSetPoint + 2) {
+            machinestate = kPidNormal;
+        }
+
+        if (steamON == 1) {
+            machinestate = kSteam;
+        }
+
+        if (backflushON || backflushState > 10) {
+            machinestate = kBackflush;
+        }
+
+        if (emergencyStop) {
+            machinestate = kEmergencyStop;
+        }
+        break;
+
+    case kBackflush:
+        if (backflushON == 0) {
+            machinestate = kPidNormal;
+        }
+
+        if (emergencyStop) {
+            machinestate = kEmergencyStop;
+        }
+        break;
+
+    case kEmergencyStop:
+        if (!emergencyStop) {
+            machinestate = kPidNormal;
+        }
+        break;
+
+    case kPidOffline:
+        if (pidON == 1) {
+            if (coldstart) {
                 machinestate = kColdStart;
-                debugPrintf("%d\n", temperature);
-                debugPrintf("%d\n", machinestate);
-
-                // some users have 100 % Output in kInit / KColdstart, reset PID
-                pidMode = 0;
-                bPID.SetMode(pidMode);
-                pidOutput = 0;
-                digitalWrite(PIN_HEATER, LOW);  // Stop heating
-
-                // start PID
-                pidMode = 1;
-                bPID.SetMode(pidMode);
-            }
-
-            break;
-
-        case kColdStart:
-            /* One high temperature let the state jump to 19.
-            * switch (machinestatecold) prevent it, we wait 10 sec with new state.
-            * during the 10 sec the temperature has to be temperature >= (BrewSetPoint-1),
-            * If not, reset machinestatecold
-            */
-            switch (machinestatecold) {
-                case 0:
-                    if (temperature >= (brewSetPoint - 1) && temperature < 150) {
-                        machinestatecoldmillis = millis();  // get millis for interval calc
-                        machinestatecold = 10;              // new state
-                        debugPrintln(
-                            "temperature >= (BrewSetPoint-1), wait 10 sec before machinestate SetPointNegative");
-                    }
-                    break;
-
-                case 10:
-                    if (temperature < (brewSetPoint - 1)) {
-                        machinestatecold = 0;  //  temperature was only one time above
-                                               //  BrewSetPoint, reset machinestatecold
-                        debugPrintln("Reset timer for machinestate SetPointNegative: temperature < (BrewSetPoint-1)");
-
-                        break;
-                    }
-
-                    if (machinestatecoldmillis + 10 * 1000 < millis())  // 10 sec temperature above BrewSetPoint, no set new state
-                    {
-                        machinestate = kSetPointNegative;
-                        debugPrintln("5 sec temperature >= (BrewSetPoint-1) finished, switch to state SetPointNegative");
-                    }
-                    break;
-            }
-
-
-            if ((timeBrewed > 0 && ONLYPID == 1) ||  // timeBrewed with Only PID
-                (ONLYPID == 0 && brewcounter > 10 && brewcounter <= 42))
-            {
-                machinestate = kBrew;
-            }
-
-            if (steamON == 1) {
-                machinestate = kSteam;
-            }
-
-            if (backflushON || backflushState > 10) {
-                machinestate = kBackflush;
-            }
-            break;
-
-        // Setpoint is below current temperature
-        case kSetPointNegative:
-            brewDetection();
-
-            if (temperature >= (brewSetPoint)) {
+            } else if (!coldstart && (temperature > (brewSetPoint - 10))) { // temperature higher BrewSetPoint-10, normal PID
                 machinestate = kPidNormal;
+            } else if (temperature <= (brewSetPoint - 10)) {
+                machinestate = kColdStart; // temperature 10C below set point, enter cold start
+                coldstart = true;
             }
+        }
+        break;
 
-            if ((timeBrewed > 0 && ONLYPID == 1) ||  // timeBrewed with Only PID
-                (ONLYPID == 0 && brewcounter > 10 && brewcounter <= 42))
-            {
-                machinestate = kBrew;
-            }
+    case kSensorError:
+        machinestate = kSensorError;
+        break;
 
-
-            if (backflushON || backflushState > 10) {
-                machinestate = kBackflush;
-            }
-
-            if (steamON == 1) {
-                machinestate = kSteam;
-            }
-            break;
-
-        case kPidNormal:
-            brewDetection();     // if brew detected, set BD PID values (if enabled)
-
-            if ((timeBrewed > 0 && ONLYPID == 1) ||  // timeBrewed with Only PID
-                (ONLYPID == 0 && brewcounter > 10 && brewcounter <= 42))
-            {
-                machinestate = kBrew;
-            }
-
-            if (steamON == 1) {
-                machinestate = kSteam;
-            }
-
-            if (backflushON || backflushState > 10) {
-                machinestate = kBackflush;
-            }
-
-            if (emergencyStop) {
-                machinestate = kEmergencyStop;
-            }
-            break;
-
-        case kBrew:
-            brewDetection();
-
-            // Output brew time, temp and tempRateAverage during brew
-            if (BREWDETECTION == 1 && logbrew.check()) {
-                debugPrintf("(tB,T,hra) --> %5.2f %6.2f %8.2f\n",
-                            (double)(millis() - startingTime) / 1000, temperature, tempRateAverage);
-            }
-
-            if ((timeBrewed == 0 && Brewdetection == 3 && ONLYPID == 1) ||  // OnlyPID+: Voltage sensor BD timeBrewed == 0 -> switch is off again
-                ((brewcounter == 10 || brewcounter == 43) && ONLYPID == 0)) // Hardware BD
-            {
-                // delay shot timer display for voltage sensor or hw brew toggle switch (brew counter)
-                machinestate = kShotTimerAfterBrew;
-                lastbrewTimeMillis = millis();  // for delay
-            } else if (Brewdetection == 1 && ONLYPID == 1 && isBrewDetected == 0) {   // SW BD, kBrew was active for set time
-                // when Software brew is finished, direct to PID BD
-                machinestate = kBrewDetectionTrailing;
-            }
-
-            if (steamON == 1) {
-                machinestate = kSteam;
-            }
-
-            if (emergencyStop) {
-                machinestate = kEmergencyStop;
-            }
-            break;
-
-        case kShotTimerAfterBrew:
-            brewDetection();
-
-            if (millis() - lastbrewTimeMillis > BREWSWITCHDELAY) {
-                debugPrintf("Shot time: %4.1f s\n", lastbrewTime / 1000);
-                machinestate = kBrewDetectionTrailing;
-                lastbrewTime = 0;
-            }
-
-            if (steamON == 1) {
-                machinestate = kSteam;
-            }
-
-            if (backflushON || backflushState > 10) {
-                machinestate = kBackflush;
-            }
-
-            if (emergencyStop) {
-                machinestate = kEmergencyStop;
-            }
-            break;
-
-        case kBrewDetectionTrailing:
-            brewDetection();
-
-            if (isBrewDetected == 0) {
-                machinestate = kPidNormal;
-            }
-
-            if ((timeBrewed > 0 && ONLYPID == 1 && Brewdetection == 3) ||  // Allow brew directly after BD only when using OnlyPID AND hardware brew switch detection
-                (ONLYPID == 0 && brewcounter > 10 && brewcounter <= 42))
-            {
-                machinestate = kBrew;
-            }
-
-            if (steamON == 1) {
-                machinestate = kSteam;
-            }
-
-            if (backflushON || backflushState > 10) {
-                machinestate = kBackflush;
-            }
-
-            if (emergencyStop) {
-                machinestate = kEmergencyStop;
-            }
-            break;
-
-        case kSteam:
-            if (steamON == 0) {
-                machinestate = kCoolDown;
-            }
-
-            if (emergencyStop) {
-                machinestate = kEmergencyStop;
-            }
-
-            if (backflushON || backflushState > 10) {
-                machinestate = kBackflush;
-            }
-            break;
-
-        case kCoolDown:
-            if (Brewdetection == 2 || Brewdetection == 3) {
-                /* For quickmill:  steam detection only via switch, calling
-                 * brewDetection() detects new steam request
-                 */
-                brewDetection();
-            }
-
-            if (Brewdetection == 1 && ONLYPID == 1) {
-                // if machine cooled down to 2°C above setpoint, enabled PID again
-                if (tempRateAverage > 0 && temperature < brewSetPoint + 2) {
-                    machinestate = kPidNormal;
-                }
-            }
-
-            if ((Brewdetection == 3 || Brewdetection == 2) && temperature < brewSetPoint + 2) {
-                machinestate = kPidNormal;
-            }
-
-            if (steamON == 1) {
-                machinestate = kSteam;
-            }
-
-            if (backflushON || backflushState > 10) {
-                machinestate = kBackflush;
-            }
-
-            if (emergencyStop) {
-                machinestate = kEmergencyStop;
-            }
-            break;
-
-        case kBackflush:
-            if (backflushON == 0) {
-                machinestate = kPidNormal;
-            }
-
-            if (emergencyStop) {
-                machinestate = kEmergencyStop;
-            }
-            break;
-
-        case kEmergencyStop:
-            if (!emergencyStop) {
-                machinestate = kPidNormal;
-            }
-            break;
-
-        case kPidOffline:
-            if (pidON == 1) {
-                if (coldstart) {
-                    machinestate = kColdStart;
-                } else if (!coldstart && (temperature > (brewSetPoint - 10))) {  // temperature higher BrewSetPoint-10, normal PID
-                    machinestate = kPidNormal;
-                } else if (temperature <= (brewSetPoint - 10)) {
-                    machinestate = kColdStart;  // temperature 10C below set point, enter cold start
-                    coldstart = true;
-                }
-            }
-            break;
-
-        case kSensorError:
-            machinestate = kSensorError;
-            break;
-
-        case keepromError:
-            machinestate = keepromError;
-            break;
+    case keepromError:
+        machinestate = keepromError;
+        break;
     }
 
     // if PID off --> offline in any case
@@ -1033,41 +1015,40 @@ void printMachineState() {
                 machinestateEnumToString(lastmachinestate), machinestateEnumToString(machinestate));
 }
 
-char const* machinestateEnumToString(MachineState machinestate) {
+char const *machinestateEnumToString(MachineState machinestate) {
     switch (machinestate) {
-        case kInit:
-            return "Init";
-        case kColdStart:
-            return "Cold Start";
-        case kSetPointNegative:
-            return "Set Point Negative";
-        case kPidNormal:
-            return "PID Normal";
-        case kBrew:
-            return "Brew";
-        case kShotTimerAfterBrew:
-            return "Shot Timer After Brew";
-        case kBrewDetectionTrailing:
-            return "Brew Detection Trailing";
-        case kSteam:
-            return "Steam";
-        case kCoolDown:
-            return "Cool Down";
-        case kBackflush:
-            return "Backflush";
-        case kEmergencyStop:
-            return "Emergency Stop";
-        case kPidOffline:
-            return "PID Offline";
-        case kSensorError:
-            return "Sensor Error";
-        case keepromError:
-            return "EEPROM Error";
+    case kInit:
+        return "Init";
+    case kColdStart:
+        return "Cold Start";
+    case kSetPointNegative:
+        return "Set Point Negative";
+    case kPidNormal:
+        return "PID Normal";
+    case kBrew:
+        return "Brew";
+    case kShotTimerAfterBrew:
+        return "Shot Timer After Brew";
+    case kBrewDetectionTrailing:
+        return "Brew Detection Trailing";
+    case kSteam:
+        return "Steam";
+    case kCoolDown:
+        return "Cool Down";
+    case kBackflush:
+        return "Backflush";
+    case kEmergencyStop:
+        return "Emergency Stop";
+    case kPidOffline:
+        return "PID Offline";
+    case kSensorError:
+        return "Sensor Error";
+    case keepromError:
+        return "EEPROM Error";
     }
 
     return "Unknown";
 }
-
 
 void debugVerboseOutput() {
     static PeriodicTrigger trigger(10000);
@@ -1080,14 +1061,13 @@ void debugVerboseOutput() {
     }
 }
 
-
 /**
  * @brief Set up internal WiFi hardware
  */
 void wiFiSetup() {
     wm.setCleanConnect(true);
     wm.setConfigPortalTimeout(60); // sec Timeout for Portal
-    wm.setConnectTimeout(10); // Try 10 Sec to Connect to WLAN
+    wm.setConnectTimeout(10);      // Try 10 Sec to Connect to WLAN
     wm.setBreakAfterConfig(true);
     wm.setHostname(hostname);
 
@@ -1109,9 +1089,9 @@ void wiFiSetup() {
     } else {
         debugPrintln("WiFi connection timed out...");
 
-        #if OLED_DISPLAY != 0
-            displayLogo(langstring_nowifi[0], langstring_nowifi[1]);
-        #endif
+#if OLED_DISPLAY != 0
+        displayLogo(langstring_nowifi[0], langstring_nowifi[1]);
+#endif
 
         wm.disconnect();
         delay(1000);
@@ -1119,13 +1099,12 @@ void wiFiSetup() {
         offlineMode = 1;
     }
 
-    #if OLED_DISPLAY != 0
-        displayLogo(langstring_connectwifi1, wm.getWiFiSSID(true));
-    #endif
+#if OLED_DISPLAY != 0
+    displayLogo(langstring_connectwifi1, wm.getWiFiSSID(true));
+#endif
 
     startRemoteSerialServer();
 }
-
 
 /**
  * @brief Set up embedded Website
@@ -1134,13 +1113,13 @@ void websiteSetup() {
     setEepromWriteFcn(writeSysParamsToStorage);
 
     if (readSysParamsFromStorage() != 0) {
-        #if OLED_DISPLAY != 0
-            displayLogo("3:", "use eeprom values..");
-        #endif
+#if OLED_DISPLAY != 0
+        displayLogo("3:", "use eeprom values..");
+#endif
     } else {
-        #if OLED_DISPLAY != 0
-            displayLogo("3:", "config defaults..");
-        #endif
+#if OLED_DISPLAY != 0
+        displayLogo("3:", "config defaults..");
+#endif
     }
 
     serverSetup();
@@ -1149,83 +1128,82 @@ void websiteSetup() {
 const char sysVersion[] = (STR(FW_VERSION) "." STR(FW_SUBVERSION) "." STR(FW_HOTFIX) " " FW_BRANCH);
 
 void setup() {
-    editableVars =  {
+    editableVars = {
         //#1
-        {F("PID_ON"), "Enable PID Controller", false, "", kUInt8, 0, []{ return true; }, 0, 1, (void *)&pidON},
+        {F("PID_ON"), "Enable PID Controller", false, "", kUInt8, 0, [] { return true; }, 0, 1, (void *)&pidON},
 
         //#2
-        {F("START_USE_PONM"), F("Enable PonM"), true, F("Use PonM mode (<a href='http://brettbeauregard.com/blog/2017/06/introducing-proportional-on-measurement/' target='_blank'>details</a>) while heating up the machine. Otherwise, just use the same PID values that are used later"), kUInt8, 0, []{ return true; }, 0, 1, (void *)&usePonM},
+        {F("START_USE_PONM"), F("Enable PonM"), true, F("Use PonM mode (<a href='http://brettbeauregard.com/blog/2017/06/introducing-proportional-on-measurement/' target='_blank'>details</a>) while heating up the machine. Otherwise, just use the same PID values that are used later"), kUInt8, 0, [] { return true; }, 0, 1, (void *)&usePonM},
 
         //#3
-        {F("START_KP"), F("Start Kp"), true, F("Proportional gain for cold start controller. This value is not used with the the error as usual but the absolute value of the temperature and counteracts the integral part as the temperature rises. Ideally, both parameters are set so that they balance each other out when the target temperature is reached."), kDouble, sPIDSection, []{ return true && usePonM; }, PID_KP_START_MIN, PID_KP_START_MAX, (void *)&startKp},
+        {F("START_KP"), F("Start Kp"), true, F("Proportional gain for cold start controller. This value is not used with the the error as usual but the absolute value of the temperature and counteracts the integral part as the temperature rises. Ideally, both parameters are set so that they balance each other out when the target temperature is reached."), kDouble, sPIDSection, [] { return true && usePonM; }, PID_KP_START_MIN, PID_KP_START_MAX, (void *)&startKp},
 
         //#4
-        {F("START_TN"), F("Start Tn"), true, F("Integral gain for cold start controller (PonM mode, <a href='http://brettbeauregard.com/blog/2017/06/introducing-proportional-on-measurement/' target='_blank'>details</a>)"), kDouble, sPIDSection, []{ return true && usePonM; }, PID_TN_START_MIN, PID_TN_START_MAX, (void *)&startTn},
+        {F("START_TN"), F("Start Tn"), true, F("Integral gain for cold start controller (PonM mode, <a href='http://brettbeauregard.com/blog/2017/06/introducing-proportional-on-measurement/' target='_blank'>details</a>)"), kDouble, sPIDSection, [] { return true && usePonM; }, PID_TN_START_MIN, PID_TN_START_MAX, (void *)&startTn},
 
         //#5
-        {F("PID_KP"), F("PID Kp"), true, F("Proportional gain (in Watts/C°) for the main PID controller (in P-Tn-Tv form, <a href='http://testcon.info/EN_BspPID-Regler.html#strukturen' target='_blank'>Details<a>). The higher this value is, the higher is the output of the heater for a given temperature difference. E.g. 5°C difference will result in P*5 Watts of heater output."), kDouble, sPIDSection, []{ return true; }, PID_KP_REGULAR_MIN, PID_KP_REGULAR_MAX, (void *)&aggKp},
+        {F("PID_KP"), F("PID Kp"), true, F("Proportional gain (in Watts/C°) for the main PID controller (in P-Tn-Tv form, <a href='http://testcon.info/EN_BspPID-Regler.html#strukturen' target='_blank'>Details<a>). The higher this value is, the higher is the output of the heater for a given temperature difference. E.g. 5°C difference will result in P*5 Watts of heater output."), kDouble, sPIDSection, [] { return true; }, PID_KP_REGULAR_MIN, PID_KP_REGULAR_MAX, (void *)&aggKp},
 
         //#6
-        {F("PID_TN"), F("PID Tn (=Kp/Ki)"), true, F("Integral time constant (in seconds) for the main PID controller (in P-Tn-Tv form, <a href='http://testcon.info/EN_BspPID-Regler.html#strukturen' target='_blank'>Details<a>). The larger this value is, the slower the integral part of the PID will increase (or decrease) if the process value remains above (or below) the setpoint in spite of proportional action. The smaller this value, the faster the integral term changes."), kDouble, sPIDSection, []{ return true; }, PID_TN_REGULAR_MIN, PID_TN_REGULAR_MAX, (void *)&aggTn},
+        {F("PID_TN"), F("PID Tn (=Kp/Ki)"), true, F("Integral time constant (in seconds) for the main PID controller (in P-Tn-Tv form, <a href='http://testcon.info/EN_BspPID-Regler.html#strukturen' target='_blank'>Details<a>). The larger this value is, the slower the integral part of the PID will increase (or decrease) if the process value remains above (or below) the setpoint in spite of proportional action. The smaller this value, the faster the integral term changes."), kDouble, sPIDSection, [] { return true; }, PID_TN_REGULAR_MIN, PID_TN_REGULAR_MAX, (void *)&aggTn},
 
         //#7
-        {F("PID_TV"), F("PID Tv (=Kd/Kp)"), true, F("Differential time constant (in seconds) for the main PID controller (in P-Tn-Tv form, <a href='http://testcon.info/EN_BspPID-Regler.html#strukturen' target='_blank'>Details<a>). This value determines how far the PID equation projects the current trend into the future. The higher the value, the greater the dampening. Select it carefully, it can cause oscillations if it is set too high or too low."), kDouble, sPIDSection, []{ return true; }, PID_TV_REGULAR_MIN, PID_TV_REGULAR_MAX, (void *)&aggTv},
+        {F("PID_TV"), F("PID Tv (=Kd/Kp)"), true, F("Differential time constant (in seconds) for the main PID controller (in P-Tn-Tv form, <a href='http://testcon.info/EN_BspPID-Regler.html#strukturen' target='_blank'>Details<a>). This value determines how far the PID equation projects the current trend into the future. The higher the value, the greater the dampening. Select it carefully, it can cause oscillations if it is set too high or too low."), kDouble, sPIDSection, [] { return true; }, PID_TV_REGULAR_MIN, PID_TV_REGULAR_MAX, (void *)&aggTv},
 
         //#8
-        {F("PID_I_MAX"), F("PID Integrator Max"), true, F("Internal integrator limit to prevent windup (in Watts). This will allow the integrator to only grow to the specified value. This should be approximally equal to the output needed to hold the temperature after the setpoint has been reached and is depending on machine type and whether the boiler is insulated or not."), kDouble, sPIDSection, []{ return true; }, PID_I_MAX_REGULAR_MIN, PID_I_MAX_REGULAR_MAX, (void *)&aggIMax},
+        {F("PID_I_MAX"), F("PID Integrator Max"), true, F("Internal integrator limit to prevent windup (in Watts). This will allow the integrator to only grow to the specified value. This should be approximally equal to the output needed to hold the temperature after the setpoint has been reached and is depending on machine type and whether the boiler is insulated or not."), kDouble, sPIDSection, [] { return true; }, PID_I_MAX_REGULAR_MIN, PID_I_MAX_REGULAR_MAX, (void *)&aggIMax},
 
         //#9
-        {F("STEAM_KP"), F("Steam Kp"), true, F("Proportional gain for the steaming mode (I or D are not used)"), kDouble, sPIDSection, []{ return true; }, PID_KP_STEAM_MIN, PID_KP_STEAM_MAX, (void *)&steamKp},
+        {F("STEAM_KP"), F("Steam Kp"), true, F("Proportional gain for the steaming mode (I or D are not used)"), kDouble, sPIDSection, [] { return true; }, PID_KP_STEAM_MIN, PID_KP_STEAM_MAX, (void *)&steamKp},
 
         //#10
-        {F("TEMP"), F("Temperature"), false, "", kDouble, sPIDSection, []{ return false; }, 0, 200, (void *)&temperature},
+        {F("TEMP"), F("Temperature"), false, "", kDouble, sPIDSection, [] { return false; }, 0, 200, (void *)&temperature},
 
         //#11
-        {F("BREW_SET_POINT"), F("Set point (°C)"), true, F("The temperature that the PID will attempt to reach and hold"), kDouble, sTempSection, []{ return true; }, BREW_SETPOINT_MIN, BREW_SETPOINT_MAX, (void *)&brewSetPoint},
+        {F("BREW_SET_POINT"), F("Set point (°C)"), true, F("The temperature that the PID will attempt to reach and hold"), kDouble, sTempSection, [] { return true; }, BREW_SETPOINT_MIN, BREW_SETPOINT_MAX, (void *)&brewSetPoint},
 
         //#12
-        {F("BREW_TEMP_OFFSET"), F("Offset (°C)"), true, F("Optional offset that is added to the user-visible setpoint. Can be used to compensate sensor offsets and the average temperature loss between boiler and group so that the setpoint represents the approximate brew temperature."), kDouble, sTempSection, []{ return true; }, BREW_TEMP_OFFSET_MIN, BREW_TEMP_OFFSET_MAX, (void *)&brewTempOffset},
+        {F("BREW_TEMP_OFFSET"), F("Offset (°C)"), true, F("Optional offset that is added to the user-visible setpoint. Can be used to compensate sensor offsets and the average temperature loss between boiler and group so that the setpoint represents the approximate brew temperature."), kDouble, sTempSection, [] { return true; }, BREW_TEMP_OFFSET_MIN, BREW_TEMP_OFFSET_MAX, (void *)&brewTempOffset},
 
         //#13
-        {F("BREW_TIME"), F("Brew Time (s)"), true, F("Stop brew after this time"), kDouble, sTempSection, []{ return true && ONLYPID == 0; }, BREW_TIME_MIN, BREW_TIME_MAX, (void *)&brewtime},
+        {F("BREW_TIME"), F("Brew Time (s)"), true, F("Stop brew after this time"), kDouble, sTempSection, [] { return true && ONLYPID == 0; }, BREW_TIME_MIN, BREW_TIME_MAX, (void *)&brewtime},
 
         //#14
-        {F("BREW_PREINFUSIONPAUSE"), F("Preinfusion Pause Time (s)"), false, "", kDouble, sTempSection, []{ return true && ONLYPID == 0; }, PRE_INFUSION_PAUSE_MIN, PRE_INFUSION_PAUSE_MAX, (void *)&preinfusionpause},
+        {F("BREW_PREINFUSIONPAUSE"), F("Preinfusion Pause Time (s)"), false, "", kDouble, sTempSection, [] { return true && ONLYPID == 0; }, PRE_INFUSION_PAUSE_MIN, PRE_INFUSION_PAUSE_MAX, (void *)&preinfusionpause},
 
         //#15
-        {F("BREW_PREINFUSION"), F("Preinfusion Time (s)"), false, "", kDouble, sTempSection, []{ return true && ONLYPID == 0; }, PRE_INFUSION_TIME_MIN, PRE_INFUSION_TIME_MAX, (void *)&preinfusion},
+        {F("BREW_PREINFUSION"), F("Preinfusion Time (s)"), false, "", kDouble, sTempSection, [] { return true && ONLYPID == 0; }, PRE_INFUSION_TIME_MIN, PRE_INFUSION_TIME_MAX, (void *)&preinfusion},
 
         //#16
-        {F("SCALE_WEIGHTSETPOINT"), F("Brew weight setpoint (g)"), true, F("Brew until this weight has been measured."), kDouble, sTempSection, []{ return true && (ONLYPIDSCALE == 1 || BREWMODE == 2); }, WEIGHTSETPOINT_MIN, WEIGHTSETPOINT_MAX, (void *)&weightSetpoint},
+        {F("SCALE_WEIGHTSETPOINT"), F("Brew weight setpoint (g)"), true, F("Brew until this weight has been measured."), kDouble, sTempSection, [] { return true && (ONLYPIDSCALE == 1 || BREWMODE == 2); }, WEIGHTSETPOINT_MIN, WEIGHTSETPOINT_MAX, (void *)&weightSetpoint},
 
         //#17
-        {F("PID_BD_ON"), F("Enable Brew PID"), true, F("Use separate PID parameters while brew is running"), kUInt8, sBDSection, []{ return true && BREWDETECTION > 0; }, 0, 1, (void *)&useBDPID},
+        {F("PID_BD_ON"), F("Enable Brew PID"), true, F("Use separate PID parameters while brew is running"), kUInt8, sBDSection, [] { return true && BREWDETECTION > 0; }, 0, 1, (void *)&useBDPID},
 
         //#18
-        {F("PID_BD_KP"), F("BD Kp"), true, F("Proportional gain (in Watts/°C) for the PID when brewing has been detected. Use this controller to either increase heating during the brew to counter temperature drop from fresh cold water in the boiler. Some machines, e.g. Rancilio Silvia, actually need to heat less not at all during the brew because of high temperature stability (<a href='https://www.kaffee-netz.de/threads/installation-eines-temperatursensors-in-silvia-bruehgruppe.111093/#post-1453641' target='_blank'>Details<a>)"), kDouble, sBDSection, []{ return true && BREWDETECTION > 0 && useBDPID; }, PID_KP_BD_MIN, PID_KP_BD_MAX, (void *)&aggbKp},
+        {F("PID_BD_KP"), F("BD Kp"), true, F("Proportional gain (in Watts/°C) for the PID when brewing has been detected. Use this controller to either increase heating during the brew to counter temperature drop from fresh cold water in the boiler. Some machines, e.g. Rancilio Silvia, actually need to heat less not at all during the brew because of high temperature stability (<a href='https://www.kaffee-netz.de/threads/installation-eines-temperatursensors-in-silvia-bruehgruppe.111093/#post-1453641' target='_blank'>Details<a>)"), kDouble, sBDSection, [] { return true && BREWDETECTION > 0 && useBDPID; }, PID_KP_BD_MIN, PID_KP_BD_MAX, (void *)&aggbKp},
 
         //#19
-        {F("PID_BD_TN"), F("BD Tn (=Kp/Ki)"), true, F("Integral time constant (in seconds) for the PID when brewing has been detected."), kDouble, sBDSection, []{ return true && BREWDETECTION > 0 && useBDPID; }, PID_TN_BD_MIN, PID_TN_BD_MAX, (void *)&aggbTn},
+        {F("PID_BD_TN"), F("BD Tn (=Kp/Ki)"), true, F("Integral time constant (in seconds) for the PID when brewing has been detected."), kDouble, sBDSection, [] { return true && BREWDETECTION > 0 && useBDPID; }, PID_TN_BD_MIN, PID_TN_BD_MAX, (void *)&aggbTn},
 
         //#20
-        {F("PID_BD_TV"), F("BD Tv (=Kd/Kp)"), true, F("Differential time constant (in seconds) for the PID when brewing has been detected."), kDouble, sBDSection, []{ return true && BREWDETECTION > 0 && useBDPID; }, PID_TV_BD_MIN, PID_TV_BD_MAX, (void *)&aggbTv},
+        {F("PID_BD_TV"), F("BD Tv (=Kd/Kp)"), true, F("Differential time constant (in seconds) for the PID when brewing has been detected."), kDouble, sBDSection, [] { return true && BREWDETECTION > 0 && useBDPID; }, PID_TV_BD_MIN, PID_TV_BD_MAX, (void *)&aggbTv},
 
         //#21
-        {F("PID_BD_TIMER"), F("PID BD Time (s)"), true, F("Fixed time in seconds for which the BD PID will stay enabled (also after Brew switch is inactive again)."), kDouble, sBDSection, []{ return true && BREWDETECTION > 0 && (useBDPID || BREWDETECTION == 1); }, BREW_SW_TIMER_MIN, BREW_SW_TIMER_MAX, (void *)&brewtimersoftware},
+        {F("PID_BD_TIMER"), F("PID BD Time (s)"), true, F("Fixed time in seconds for which the BD PID will stay enabled (also after Brew switch is inactive again)."), kDouble, sBDSection, [] { return true && BREWDETECTION > 0 && (useBDPID || BREWDETECTION == 1); }, BREW_SW_TIMER_MIN, BREW_SW_TIMER_MAX, (void *)&brewtimersoftware},
 
         //#22
-        {F("PID_BD_BREWSENSITIVITY"), F("PID BD Sensitivity"), true, F("Software brew detection sensitivity that looks at average temperature, <a href='https://manual.rancilio-pid.de/de/customization/brueherkennung.html' target='_blank'>Details</a>. Needs to be &gt;0 also for Hardware switch detection."), kDouble, sBDSection, []{ return true && BREWDETECTION == 1; }, BD_THRESHOLD_MIN, BD_THRESHOLD_MAX, (void *)&brewsensitivity},
+        {F("PID_BD_BREWSENSITIVITY"), F("PID BD Sensitivity"), true, F("Software brew detection sensitivity that looks at average temperature, <a href='https://manual.rancilio-pid.de/de/customization/brueherkennung.html' target='_blank'>Details</a>. Needs to be &gt;0 also for Hardware switch detection."), kDouble, sBDSection, [] { return true && BREWDETECTION == 1; }, BD_THRESHOLD_MIN, BD_THRESHOLD_MAX, (void *)&brewsensitivity},
 
         //#23
-        {F("STEAM_MODE"), F("Steam Mode"), false, "", kUInt8, sOtherSection, []{ return false; }, 0, 1, (void *)&steamON},
+        {F("STEAM_MODE"), F("Steam Mode"), false, "", kUInt8, sOtherSection, [] { return false; }, 0, 1, (void *)&steamON},
 
         //#24
-        {F("BACKFLUSH_ON"), F("Backflush"), false, "", kUInt8, sOtherSection, []{ return false; }, 0, 1, (void *)&backflushON},
+        {F("BACKFLUSH_ON"), F("Backflush"), false, "", kUInt8, sOtherSection, [] { return false; }, 0, 1, (void *)&backflushON},
 
         //#25
-        {F("VERSION"), F("Version"), false, "", kCString, sOtherSection, []{ return false; }, 0, 1, (void *)sysVersion}
-    };
-    //when adding parameters, update EDITABLE_VARS_LEN!
+        {F("VERSION"), F("Version"), false, "", kCString, sOtherSection, [] { return false; }, 0, 1, (void *)sysVersion}};
+    // when adding parameters, update EDITABLE_VARS_LEN!
 
     Serial.begin(115200);
 
@@ -1271,28 +1249,28 @@ void setup() {
 
     pinMode(PIN_STEAMSWITCH, INPUT_PULLDOWN);
 
-    #if OLED_DISPLAY != 0
-        u8g2.setI2CAddress(oled_i2c * 2);
-        u8g2.begin();
-        u8g2_prepare();
-        displayLogo(String("Version ") + String(sysVersion), "");
-        delay(2000);
-    #endif
+#if OLED_DISPLAY != 0
+    u8g2.setI2CAddress(oled_i2c * 2);
+    u8g2.begin();
+    u8g2_prepare();
+    displayLogo(String("Version ") + String(sysVersion), "");
+    delay(2000);
+#endif
 
-    // Init Scale by BREWMODE 2 or SHOTTIMER 2
-    #if (BREWMODE == 2 || ONLYPIDSCALE == 1)
-        initScale();
-    #endif
+// Init Scale by BREWMODE 2 or SHOTTIMER 2
+#if (BREWMODE == 2 || ONLYPIDSCALE == 1)
+    initScale();
+#endif
 
     // Fallback offline
-    if (connectmode == 1) {  // WiFi Mode
+    if (connectmode == 1) { // WiFi Mode
         wiFiSetup();
         websiteSetup();
 
         // OTA Updates
         if (ota && WiFi.status() == WL_CONNECTED) {
-            ArduinoOTA.setHostname(OTAhost);  //  Device name for OTA
-            ArduinoOTA.setPassword(OTApass);  //  Password for OTA
+            ArduinoOTA.setHostname(OTAhost); //  Device name for OTA
+            ArduinoOTA.setPassword(OTApass); //  Password for OTA
             ArduinoOTA.begin();
         }
 
@@ -1305,7 +1283,7 @@ void setup() {
         }
 
         if (INFLUXDB == 1) {
-           influxDbSetup();
+            influxDbSetup();
         }
     }
 
@@ -1335,24 +1313,22 @@ void setup() {
     previousMillisVoltagesensorreading = currentTime;
     lastMQTTConnectionAttempt = currentTime;
 
-    #if (BREWMODE == 2)
-        previousMillisScale = currentTime;
-    #endif
-    #if (PRESSURESENSOR == 1)
-        previousMillisPressure = currentTime;
-    #endif
+#if (BREWMODE == 2)
+    previousMillisScale = currentTime;
+#endif
+#if (PRESSURESENSOR == 1)
+    previousMillisPressure = currentTime;
+#endif
 
     setupDone = true;
 
     enableTimer1();
 }
 
-
 void loop() {
     looppid();
     checkForRemoteSerialClients();
 }
-
 
 void looppid() {
     // Only do Wifi stuff, if Wifi is connected
@@ -1366,12 +1342,12 @@ void looppid() {
             }
         }
 
-        ArduinoOTA.handle();  // For OTA
+        ArduinoOTA.handle(); // For OTA
 
         // Disable interrupt it OTA is starting, otherwise it will not work
         ArduinoOTA.onStart([]() {
             disableTimer1();
-            digitalWrite(PIN_HEATER, LOW);  // Stop heating
+            digitalWrite(PIN_HEATER, LOW); // Stop heating
         });
 
         ArduinoOTA.onError([](ota_error_t error) { enableTimer1(); });
@@ -1379,69 +1355,67 @@ void looppid() {
         // Enable interrupts if OTA is finished
         ArduinoOTA.onEnd([]() { enableTimer1(); });
 
-        wifiReconnects = 0;  // reset wifi reconnects if connected
+        wifiReconnects = 0; // reset wifi reconnects if connected
     } else {
         checkWifi();
     }
 
     BrewTempSensor.RefreshSensorData(); // update temperature values
-    testEmergencyStop();  // test if temp is too high
-    bPID.Compute();       // the variable pidOutput now has new values from PID (will be written to heater pin in ISR.cpp)
+    testEmergencyStop();                // test if temp is too high
+    bPID.Compute();                     // the variable pidOutput now has new values from PID (will be written to heater pin in ISR.cpp)
 
     if ((millis() - lastTempEvent) > tempEventInterval) {
-        //send temperatures to website endpoint
+        // send temperatures to website endpoint
         sendTempEvent(temperature, brewSetPoint, pidOutput);
         lastTempEvent = millis();
 
-        #if VERBOSE
+#if VERBOSE
         if (pidON) {
             debugPrintf("Current PID mode: %s\n", bPID.GetPonE() ? "PonE" : "PonM");
 
-            //P-Part
+            // P-Part
             debugPrintf("Current PID input error: %f\n", bPID.GetInputError());
             debugPrintf("Current PID P part: %f\n", bPID.GetLastPPart());
             debugPrintf("Current PID kP: %f\n", bPID.GetKp());
-            //I-Part
+            // I-Part
             debugPrintf("Current PID I sum: %f\n", bPID.GetLastIPart());
             debugPrintf("Current PID kI: %f\n", bPID.GetKi());
-            //D-Part
+            // D-Part
             debugPrintf("Current PID diff'd input: %f\n", bPID.GetDeltaInput());
             debugPrintf("Current PID D part: %f\n", bPID.GetLastDPart());
             debugPrintf("Current PID kD: %f\n", bPID.GetKd());
 
-            //Combined PID output
+            // Combined PID output
             debugPrintf("Current PID Output: %f\n\n", pidOutput);
             debugPrintf("Current Machinestate: %s\n\n", machinestateEnumToString(machinestate));
             debugPrintf("timeBrewed %f\n", timeBrewed);
             debugPrintf("brewtimersoftware %f\n", brewtimersoftware);
             debugPrintf("isBrewDetected %i\n", isBrewDetected);
             debugPrintf("Brewdetection %i\n", Brewdetection);
-
-
         }
-        #endif
+#endif
     }
 
-    #if (BREWMODE == 2 || ONLYPIDSCALE == 1)
-        checkWeight();  // Check Weight Scale in the loop
-    #endif
+#if (BREWMODE == 2 || ONLYPIDSCALE == 1)
+    checkWeight(); // Check Weight Scale in the loop
+#endif
 
-    #if (PRESSURESENSOR == 1)
-        checkPressure();
-    #endif
+#if (PRESSURESENSOR == 1)
+    checkPressure();
+#endif
 
-    brew();                  // start brewing if button pressed
-    checkSteamON();          // check for steam
+    brew();         // start brewing if button pressed
+    checkSteamON(); // check for steam
     setEmergencyStopTemp();
-    machinestatevoid();      // update machinestate
+    machinestatevoid(); // update machinestate
 
     if (INFLUXDB == 1) {
         sendInflux();
     }
 
-    #if (ONLYPIDSCALE == 1)  // only by shottimer 2, scale
-        shottimerscale();
-    #endif
+#if (ONLYPIDSCALE == 1) // only by shottimer 2, scale
+    shottimerscale();
+#endif
 
     // Check if PID should run or not. If not, set to manual and force output to zero
 #if OLED_DISPLAY != 0
@@ -1451,10 +1425,10 @@ void looppid() {
     }
     if (currentMillisDisplay - previousMillisDisplay >= intervalDisplay) {
         previousMillisDisplay = currentMillisDisplay;
-    #if DISPLAYTEMPLATE < 20  // not using vertical template
+#if DISPLAYTEMPLATE < 20 // not using vertical template
         Displaymachinestate();
-    #endif
-        printScreen();  // refresh display
+#endif
+        printScreen(); // refresh display
     }
 #endif
 
@@ -1464,9 +1438,9 @@ void looppid() {
             pidMode = 0;
             bPID.SetMode(pidMode);
             pidOutput = 0;
-            digitalWrite(PIN_HEATER, LOW);  // Stop heating
+            digitalWrite(PIN_HEATER, LOW); // Stop heating
         }
-    } else {  // no sensorerror, no pid off or no Emergency Stop
+    } else { // no sensorerror, no pid off or no Emergency Stop
         if (pidMode == 0) {
             pidMode = 1;
             bPID.SetMode(pidMode);
@@ -1500,8 +1474,8 @@ void looppid() {
 
     // BD PID
     if (machinestate >= kBrew && machinestate <= kBrewDetectionTrailing) {
-        if (BREWPID_DELAY > 0 && timeBrewed > 0 && timeBrewed < BREWPID_DELAY*1000) {
-            //disable PID for BREWPID_DELAY seconds, enable PID again with new tunings after that
+        if (BREWPID_DELAY > 0 && timeBrewed > 0 && timeBrewed < BREWPID_DELAY * 1000) {
+            // disable PID for BREWPID_DELAY seconds, enable PID again with new tunings after that
             if (!brewPIDdisabled) {
                 brewPIDdisabled = true;
                 bPID.SetMode(MANUAL);
@@ -1509,7 +1483,7 @@ void looppid() {
             }
         } else {
             if (brewPIDdisabled) {
-                //enable PID again
+                // enable PID again
                 bPID.SetMode(AUTOMATIC);
                 brewPIDdisabled = false;
                 debugPrintln("Enabled PID again after delay");
@@ -1536,21 +1510,21 @@ void looppid() {
     // chill-mode after steam
     if (machinestate == kCoolDown) {
         switch (machine) {
-            case QuickMill:
-                aggbKp = 150;
+        case QuickMill:
+            aggbKp = 150;
+            aggbKi = 0;
+            aggbKd = 0;
+            break;
+
+        default:
+            // calc ki, kd
+            if (aggbTn != 0) {
+                aggbKi = aggbKp / aggbTn;
+            } else {
                 aggbKi = 0;
-                aggbKd = 0;
-                break;
+            }
 
-            default:
-                // calc ki, kd
-                if (aggbTn != 0) {
-                    aggbKi = aggbKp / aggbTn;
-                } else {
-                    aggbKi = 0;
-                }
-
-                aggbKd = aggbTv * aggbKp;
+            aggbKd = aggbTv * aggbKp;
         }
 
         if (lastmachinestatepid != machinestate) {
@@ -1629,27 +1603,48 @@ void setBDPIDTunings() {
  * @return 0 = success, < 0 = failure
  */
 int readSysParamsFromStorage(void) {
-    if (sysParaPidKpStart.getStorage() != 0) return -1;
-    if (sysParaPidTnStart.getStorage() != 0) return -1;
-    if (sysParaPidKpReg.getStorage() != 0) return -1;
-    if (sysParaPidTnReg.getStorage() != 0) return -1;
-    if (sysParaPidTvReg.getStorage() != 0) return -1;
-    if (sysParaPidIMaxReg.getStorage() != 0) return -1;
-    if (sysParaPidKpBd.getStorage() != 0) return -1;
-    if (sysParaPidTnBd.getStorage() != 0) return -1;
-    if (sysParaPidTvBd.getStorage() != 0) return -1;
-    if (sysParaBrewSetPoint.getStorage() != 0) return -1;
-    if (sysParaTempOffset.getStorage() != 0) return -1;
-    if (sysParaBrewTime.getStorage() != 0) return -1;
-    if (sysParaBrewSwTimer.getStorage() != 0) return -1;
-    if (sysParaBrewThresh.getStorage() != 0) return -1;
-    if (sysParaPreInfTime.getStorage() != 0) return -1;
-    if (sysParaPreInfPause.getStorage() != 0) return -1;
-    if (sysParaWeightSetPoint.getStorage() != 0) return -1;
-    if (sysParaPidOn.getStorage() != 0) return -1;
-    if (sysParaPidKpSteam.getStorage() != 0) return -1;
-    if (sysParaUsePonM.getStorage() != 0) return -1;
-    if (sysParaUseBDPID.getStorage() != 0) return -1;
+    if (sysParaPidKpStart.getStorage() != 0)
+        return -1;
+    if (sysParaPidTnStart.getStorage() != 0)
+        return -1;
+    if (sysParaPidKpReg.getStorage() != 0)
+        return -1;
+    if (sysParaPidTnReg.getStorage() != 0)
+        return -1;
+    if (sysParaPidTvReg.getStorage() != 0)
+        return -1;
+    if (sysParaPidIMaxReg.getStorage() != 0)
+        return -1;
+    if (sysParaPidKpBd.getStorage() != 0)
+        return -1;
+    if (sysParaPidTnBd.getStorage() != 0)
+        return -1;
+    if (sysParaPidTvBd.getStorage() != 0)
+        return -1;
+    if (sysParaBrewSetPoint.getStorage() != 0)
+        return -1;
+    if (sysParaTempOffset.getStorage() != 0)
+        return -1;
+    if (sysParaBrewTime.getStorage() != 0)
+        return -1;
+    if (sysParaBrewSwTimer.getStorage() != 0)
+        return -1;
+    if (sysParaBrewThresh.getStorage() != 0)
+        return -1;
+    if (sysParaPreInfTime.getStorage() != 0)
+        return -1;
+    if (sysParaPreInfPause.getStorage() != 0)
+        return -1;
+    if (sysParaWeightSetPoint.getStorage() != 0)
+        return -1;
+    if (sysParaPidOn.getStorage() != 0)
+        return -1;
+    if (sysParaPidKpSteam.getStorage() != 0)
+        return -1;
+    if (sysParaUsePonM.getStorage() != 0)
+        return -1;
+    if (sysParaUseBDPID.getStorage() != 0)
+        return -1;
 
     return 0;
 }
@@ -1660,31 +1655,51 @@ int readSysParamsFromStorage(void) {
  * @return 0 = success, < 0 = failure
  */
 int writeSysParamsToStorage(void) {
-    if (sysParaPidOn.setStorage() != 0) return -1;
-    if (sysParaUsePonM.setStorage() != 0) return -1;
-    if (sysParaPidKpStart.setStorage() != 0) return -1;
-    if (sysParaPidTnStart.setStorage() != 0) return -1;
-    if (sysParaPidKpReg.setStorage() != 0) return -1;
-    if (sysParaPidTnReg.setStorage() != 0) return -1;
-    if (sysParaPidTvReg.setStorage() != 0) return -1;
-    if (sysParaPidIMaxReg.setStorage() != 0) return -1;
-    if (sysParaBrewSetPoint.setStorage() != 0) return -1;
-    if (sysParaTempOffset.setStorage() != 0) return -1;
-    if (sysParaBrewTime.setStorage() != 0) return -1;
-    if (sysParaBrewSwTimer.setStorage() != 0) return -1;
-    if (sysParaBrewThresh.setStorage() != 0) return -1;
-    if (sysParaPreInfTime.setStorage() != 0) return -1;
-    if (sysParaPreInfPause.setStorage() != 0) return -1;
-    if (sysParaWeightSetPoint.setStorage() != 0) return -1;
-    if (sysParaPidKpSteam.setStorage() != 0) return -1;
-    if (sysParaUseBDPID.setStorage() != 0) return -1;
-    if (sysParaPidKpBd.setStorage() != 0) return -1;
-    if (sysParaPidTnBd.setStorage() != 0) return -1;
-    if (sysParaPidTvBd.setStorage() != 0) return -1;
+    if (sysParaPidOn.setStorage() != 0)
+        return -1;
+    if (sysParaUsePonM.setStorage() != 0)
+        return -1;
+    if (sysParaPidKpStart.setStorage() != 0)
+        return -1;
+    if (sysParaPidTnStart.setStorage() != 0)
+        return -1;
+    if (sysParaPidKpReg.setStorage() != 0)
+        return -1;
+    if (sysParaPidTnReg.setStorage() != 0)
+        return -1;
+    if (sysParaPidTvReg.setStorage() != 0)
+        return -1;
+    if (sysParaPidIMaxReg.setStorage() != 0)
+        return -1;
+    if (sysParaBrewSetPoint.setStorage() != 0)
+        return -1;
+    if (sysParaTempOffset.setStorage() != 0)
+        return -1;
+    if (sysParaBrewTime.setStorage() != 0)
+        return -1;
+    if (sysParaBrewSwTimer.setStorage() != 0)
+        return -1;
+    if (sysParaBrewThresh.setStorage() != 0)
+        return -1;
+    if (sysParaPreInfTime.setStorage() != 0)
+        return -1;
+    if (sysParaPreInfPause.setStorage() != 0)
+        return -1;
+    if (sysParaWeightSetPoint.setStorage() != 0)
+        return -1;
+    if (sysParaPidKpSteam.setStorage() != 0)
+        return -1;
+    if (sysParaUseBDPID.setStorage() != 0)
+        return -1;
+    if (sysParaPidKpBd.setStorage() != 0)
+        return -1;
+    if (sysParaPidTnBd.setStorage() != 0)
+        return -1;
+    if (sysParaPidTvBd.setStorage() != 0)
+        return -1;
 
     return storageCommit();
 }
-
 
 /**
  * @brief Performs a factory reset.
