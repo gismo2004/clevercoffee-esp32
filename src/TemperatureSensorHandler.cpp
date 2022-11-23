@@ -69,7 +69,6 @@ void TemperatureSensorHandler::ReadTemperatureSensorDallas() {
                 _previousTemperature = tempC;
             }
             Temperature = tempC;
-
             return;
         }
     }
@@ -86,11 +85,19 @@ void TemperatureSensorHandler::ReadTemperatureSensorTSIC() {
         _previousRequestMillis = millis();
 
         float tempC = _sensors_zacwire->getTemp();
+        _sensorBadReading = true;
         if (tempC != 222 && tempC != 221) {
             _sensorBadReading = false;
+            _newData = true;
+            // initialize correctly
+            if (_tempAvailable) {
+                _previousTemperature = Temperature;
+            } else {
+                _tempAvailable = true;
+                _previousTemperature = tempC;
+            }
             Temperature = tempC;
         }
-        _sensorBadReading = true;
     }
 }
 
