@@ -17,8 +17,7 @@
 
 #include <WiFiManager.h>
 #include <U8g2lib.h>            // i2c display
-#include "TSIC.h"               // old library for TSIC temp sensor
-#include <ZACwire.h>            // new TSIC bus library
+#include "TemperatureSensorHandler.h"
 #include "PID_v1.h"             // for PID calculation
 
 // Includes
@@ -32,9 +31,6 @@
 #include "defaults.h"
 #include <os.h>
 
-#if TEMPSENSOR == 1
-    #include <DallasTemperature.h>  // Library for dallas temp sensor
-#endif
 
 hw_timer_t *timer = NULL;
 
@@ -232,28 +228,11 @@ int backflushON = 0;             // 1 = backflush mode active
 int flushCycles = 0;             // number of active flush cycles
 int backflushState = 10;         // counter for state machine
 
-// Moving average for software brew detection
-double tempRateAverage = 0;             // average value of temp values
-double tempChangeRateAverageMin = 0;
 unsigned long timeBrewDetection = 0;
 int isBrewDetected = 0;                 // flag is set if brew was detected
-bool movingAverageInitialized = false;  // flag set when average filter is initialized, also used for sensor check
 
 // Brewing, 1 = Normal Preinfusion , 2 = Scale & Shottimer = 2
 #include "brewscaleini.h"
-
-// Sensor check
-boolean sensorError = false;
-int error = 0;
-int maxErrorCounter = 10;        // depends on intervaltempmes* , define max seconds for invalid data
-
-// PID controller
-unsigned long previousMillistemp;    // initialisation at the end of init()
-#if TEMPSENSOR == 1
-    unsigned long intervaltempmestsic = 400;
-#else
-    const unsigned long intervaltempmestsic = 400;
-#endif
 
 int pidMode = 1;    // 1 = Automatic, 0 = Manual
 
@@ -264,6 +243,16 @@ double previousInput = 0;
 double temperature, pidOutput;
 int steamON = 0;
 int steamFirstON = 0;
+
+bool sensorError = false;
+TemperatureSensorHandler BrewTempSensor;
+float tempRateAverage = 0;
+
+void OnBrewSensorValuesUpdate(float temp, float rate, bool error) {
+    temperature = temp;
+    tempRateAverage = rate;
+    sensorError = error;
+}
 
 #if startTn == 0
     double startKi = 0;
@@ -283,20 +272,6 @@ double aggKd = aggTv * aggKp;
 #include "ISR.h"
 
 PID bPID(&temperature, &pidOutput, &setPoint, aggKp, aggKi, aggKd, 1, DIRECT);
-
-// Dallas temp sensor
-#if TEMPSENSOR == 1
-    OneWire oneWire(PIN_TEMPSENSOR);         // Setup a OneWire instance to communicate with OneWire
-                                            // devices (not just Maxim/Dallas temperature ICs)
-    DallasTemperature sensors(&oneWire);
-    DeviceAddress sensorDeviceAddress;      // arrays to hold device address
-#endif
-
-#if TEMPSENSOR == 2
-    // TSIC 306 temp sensor
-    ZACwire Sensor2(PIN_TEMPSENSOR, 306);    // set pin to receive signal from the TSic 306
-#endif
-
 
 // MQTT
 #include "MQTT.h"
@@ -443,134 +418,6 @@ void testEmergencyStop() {
         emergencyStop = false;
     }
 }
-
-/**
- * @brief FIR moving average filter for software brew detection
- */
-void calculateTemperatureMovingAverage() {
-    const int numValues = 15;                      // moving average filter length
-    static double tempValues[numValues];           // array of temp values
-    static unsigned long timeValues[numValues];    // array of time values
-    static double tempChangeRates[numValues];
-    static int valueIndex = 1;                     // the index of the current value
-
-    if (Brewdetection == 1 && !movingAverageInitialized) {
-        for (int index = 0; index < numValues; index++) {
-            tempValues[index] = temperature;
-            timeValues[index] = 0;
-            tempChangeRates[index] = 0;
-        }
-
-        movingAverageInitialized = true;
-    }
-
-    timeValues[valueIndex] = millis();
-    tempValues[valueIndex] = temperature;
-
-    double tempChangeRate = 0;                     // local change rate of temperature
-    if (valueIndex == numValues - 1) {
-        tempChangeRate = (tempValues[numValues - 1] - tempValues[0]) /
-                        (timeValues[numValues - 1] - timeValues[0]) * 10000;
-    } else {
-        tempChangeRate = (tempValues[valueIndex] - tempValues[valueIndex + 1]) /
-                        (timeValues[valueIndex] - timeValues[valueIndex + 1]) * 10000;
-    }
-    tempChangeRates[valueIndex] = tempChangeRate;
-
-    double totalTempChangeRateSum = 0;
-    for (int i = 0; i < numValues; i++) {
-        totalTempChangeRateSum += tempChangeRates[i];
-    }
-
-    tempRateAverage = totalTempChangeRateSum / numValues * 100;
-
-    if (tempRateAverage < tempChangeRateAverageMin) {
-        tempChangeRateAverageMin = tempRateAverage;
-    }
-
-    if (valueIndex >= numValues - 1) {
-        // ...wrap around to the beginning:
-        valueIndex = 0;
-    } else {
-        valueIndex++;
-    }
-}
-
-/**
- * @brief check sensor value.
- * @return If < 0 or difference between old and new >25, then increase error.
- *      If error is equal to maxErrorCounter, then set sensorError
- */
-boolean checkSensor(float tempInput) {
-    boolean sensorOK = false;
-    boolean badCondition = (tempInput < 0 || tempInput > 150 || fabs(tempInput - previousInput) > 5);
-
-    if (badCondition && !sensorError) {
-        error++;
-        sensorOK = false;
-
-        if (error >= 5) {  // warning after 5 times error
-            debugPrintf(
-                "*** WARNING: temperature sensor reading: consec_errors = %i, "
-                "temp_current = %.1f\n",
-                "temp_prev = %.1f\n",
-                error, tempInput, previousInput);
-        }
-    } else if (badCondition == false && sensorOK == false) {
-        error = 0;
-        sensorOK = true;
-    }
-
-    if (error >= maxErrorCounter && !sensorError) {
-        sensorError = true;
-        debugPrintf(
-            "*** ERROR: temperature sensor malfunction: temp_current = %.1f\n",
-            tempInput);
-    } else if (error == 0 && sensorError) {
-        sensorError = false;
-    }
-
-    return sensorOK;
-}
-
-/**
- * @brief Refresh temperature.
- *      Each time checkSensor() is called to verify the value.
- *      If the value is not valid, new data is not stored.
- */
-void refreshTemp() {
-    unsigned long currentMillistemp = millis();
-    previousInput = temperature;
-
-    if (currentMillistemp - previousMillistemp >= intervaltempmestsic) {
-        previousMillistemp = currentMillistemp;
-
-    #if TEMPSENSOR == 1
-        sensors.requestTemperatures();
-        temperature = sensors.getTempCByIndex(0);
-    #endif
-    #if TEMPSENSOR == 2
-        temperature = Sensor2.getTemp();
-    #endif
-
-        if (machinestate != kSteam) {
-            temperature -= brewTempOffset;
-        }
-
-        if (!checkSensor(temperature) && movingAverageInitialized) {
-            temperature = previousInput;
-            return; // if sensor data is not valid, abort function; Sensor must
-                    // be read at least one time at system startup
-        }
-
-        if (Brewdetection == 1) {
-            calculateTemperatureMovingAverage();
-        } else if (!movingAverageInitialized) {
-            movingAverageInitialized = true;
-        }
-    }
-}
-
 
 #include "brewvoid.h"
 #include "scalevoid.h"
@@ -1462,6 +1309,13 @@ void setup() {
         }
     }
 
+#if (TEMPSENSOR == 1)
+    BrewTempSensor.Init(PIN_TEMPSENSOR, BrewTempSensor.DALLAS);
+#else
+    BrewTempSensor.Init(PIN_TEMPSENSOR, BrewTempSensor.TSIC_306);
+#endif
+    BrewTempSensor.OnDataChanged(OnBrewSensorValuesUpdate);
+
     // Initialize PID controller
     bPID.SetSampleTime(windowSize);
     bPID.SetOutputLimits(0, windowSize);
@@ -1469,29 +1323,11 @@ void setup() {
     bPID.SetSmoothingFactor(EMA_FACTOR);
     bPID.SetMode(AUTOMATIC);
 
-    // Dallas temp sensor
-    #if TEMPSENSOR == 1
-        sensors.begin();
-        sensors.getAddress(sensorDeviceAddress, 0);
-        //incremet 0.125°C
-        sensors.setResolution(sensorDeviceAddress, 11);
-        sensors.requestTemperatures();
-        temperature = sensors.getTempCByIndex(0);
-        //set waittime according to sensors specification
-        intervaltempmestsic = sensors.millisToWaitForConversion(11) * 1.1;
-    #endif
-
-    // TSic 306 temp sensor
-    #if TEMPSENSOR == 2
-        temperature = Sensor2.getTemp();
-    #endif
-
     temperature -= brewTempOffset;
 
     // Initialisation MUST be at the very end of the init(), otherwise the
     // time comparision in loop() will have a big offset
     unsigned long currentTime = millis();
-    previousMillistemp = currentTime;
     windowStartTime = currentTime;
     previousMillisDisplay = currentTime;
     previousMillisMQTT = currentTime;
@@ -1548,7 +1384,7 @@ void looppid() {
         checkWifi();
     }
 
-    refreshTemp();        // update temperature values
+    BrewTempSensor.RefreshSensorData(); // update temperature values
     testEmergencyStop();  // test if temp is too high
     bPID.Compute();       // the variable pidOutput now has new values from PID (will be written to heater pin in ISR.cpp)
 
