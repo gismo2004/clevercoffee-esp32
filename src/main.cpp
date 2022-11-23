@@ -907,13 +907,6 @@ void machinestatevoid() {
                 bPID.SetMode(pidMode);
             }
 
-            if (pidON == 0) {
-                machinestate = kPidOffline;
-            }
-
-            if (sensorError) {
-                machinestate = kSensorError;
-            }
             break;
 
         case kColdStart:
@@ -949,9 +942,6 @@ void machinestatevoid() {
                     break;
             }
 
-            if (steamON == 1) {
-                machinestate = kSteam;
-            }
 
             if ((timeBrewed > 0 && ONLYPID == 1) ||  // timeBrewed with Only PID
                 (ONLYPID == 0 && brewcounter > 10 && brewcounter <= 42))
@@ -965,14 +955,6 @@ void machinestatevoid() {
 
             if (backflushON || backflushState > 10) {
                 machinestate = kBackflush;
-            }
-
-            if (pidON == 0) {
-                machinestate = kPidOffline;
-            }
-
-            if (sensorError) {
-                machinestate = kSensorError;
             }
             break;
 
@@ -990,9 +972,6 @@ void machinestatevoid() {
                 machinestate = kBrew;
             }
 
-            if (steamON == 1) {
-                machinestate = kSteam;
-            }
 
             if (backflushON || backflushState > 10) {
                 machinestate = kBackflush;
@@ -1000,14 +979,6 @@ void machinestatevoid() {
 
             if (steamON == 1) {
                 machinestate = kSteam;
-            }
-
-            if (pidON == 0) {
-                machinestate = kPidOffline;
-            }
-
-            if (sensorError) {
-                machinestate = kSensorError;
             }
             break;
 
@@ -1030,14 +1001,6 @@ void machinestatevoid() {
 
             if (emergencyStop) {
                 machinestate = kEmergencyStop;
-            }
-
-            if (pidON == 0) {
-                machinestate = kPidOffline;
-            }
-
-            if (sensorError) {
-                machinestate = kSensorError;
             }
             break;
 
@@ -1068,14 +1031,6 @@ void machinestatevoid() {
             if (emergencyStop) {
                 machinestate = kEmergencyStop;
             }
-
-            if (pidON == 0) {
-                machinestate = kPidOffline;
-            }
-
-            if (sensorError) {
-                machinestate = kSensorError;
-            }
             break;
 
         case kShotTimerAfterBrew:
@@ -1097,14 +1052,6 @@ void machinestatevoid() {
 
             if (emergencyStop) {
                 machinestate = kEmergencyStop;
-            }
-
-            if (pidON == 0) {
-                machinestate = kPidOffline;
-            }
-
-            if (sensorError) {
-                machinestate = kSensorError;
             }
             break;
 
@@ -1132,14 +1079,6 @@ void machinestatevoid() {
             if (emergencyStop) {
                 machinestate = kEmergencyStop;
             }
-
-            if (pidON == 0) {
-                machinestate = kPidOffline;
-            }
-
-            if (sensorError) {
-                machinestate = kSensorError;
-            }
             break;
 
         case kSteam:
@@ -1153,14 +1092,6 @@ void machinestatevoid() {
 
             if (backflushON || backflushState > 10) {
                 machinestate = kBackflush;
-            }
-
-            if (pidON == 0) {
-                machinestate = kPidOffline;
-            }
-
-            if (sensorError) {
-                machinestate = kSensorError;
             }
             break;
 
@@ -1194,14 +1125,6 @@ void machinestatevoid() {
             if (emergencyStop) {
                 machinestate = kEmergencyStop;
             }
-
-            if (pidON == 0) {
-                machinestate = kPidOffline;
-            }
-
-            if (sensorError) {
-                machinestate = kSensorError;
-            }
             break;
 
         case kBackflush:
@@ -1212,27 +1135,11 @@ void machinestatevoid() {
             if (emergencyStop) {
                 machinestate = kEmergencyStop;
             }
-
-            if (pidON == 0) {
-                machinestate = kPidOffline;
-            }
-
-            if (sensorError) {
-                machinestate = kSensorError;
-            }
             break;
 
         case kEmergencyStop:
             if (!emergencyStop) {
                 machinestate = kPidNormal;
-            }
-
-            if (pidON == 0) {
-                machinestate = kPidOffline;
-            }
-
-            if (sensorError) {
-                machinestate = kSensorError;
             }
             break;
 
@@ -1247,10 +1154,6 @@ void machinestatevoid() {
                     coldstart = true;
                 }
             }
-
-            if (sensorError) {
-                machinestate = kSensorError;
-            }
             break;
 
         case kSensorError:
@@ -1260,6 +1163,16 @@ void machinestatevoid() {
         case keepromError:
             machinestate = keepromError;
             break;
+    }
+
+    // if PID off --> offline in any case
+    if (pidON == 0) {
+        machinestate = kPidOffline;
+    }
+
+    // if sensorError --> remain in error state until reboot
+    if (sensorError || lastmachinestate == kSensorError) {
+        machinestate = kSensorError;
     }
 
     if (machinestate != lastmachinestate) {
