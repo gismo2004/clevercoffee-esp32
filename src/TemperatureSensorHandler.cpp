@@ -160,7 +160,7 @@ void TemperatureSensorHandler::CheckErrors() {
     bool errorFound = false;
 
     // NOTE: messages are in prio order
-    if (_tempAvailable && Temperature <= _lLim || Temperature >= _uLim) {
+    if (_tempAvailable && (Temperature <= _lLim || Temperature >= _uLim)) {
         sprintf(logMessage, "Sensor value out of limits (val: %f / min: %f / max: %f)", Temperature, _lLim, _uLim);
         errorFound = true;
     }
@@ -184,7 +184,6 @@ void TemperatureSensorHandler::CheckErrors() {
     if (!_errorActive && !SensorInErrorState && errorFound) {
         _errorLogLastWritten = millis();
         _errorStateDetectedMillis = _errorLogLastWritten;
-        debugPrintln("first");
         debugPrintln(logMessage);
         _errorActive = true;
         return;

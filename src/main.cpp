@@ -240,12 +240,17 @@ int steamFirstON = 0;
 
 bool sensorError = false;
 TemperatureSensorHandler BrewTempSensor;
+TemperatureSensorHandler BoilerTempSensor;
 float tempRateAverage = 0;
 
 void OnBrewSensorValuesUpdate(float temp, float rate, bool error) {
     temperature = temp;
     tempRateAverage = rate;
     sensorError = error;
+}
+
+void OnBoilerSensorValuesUpdate(float temp, float rate, bool error) {
+    Serial.println("OnBoilerSensorValuesUpdate: " + String(temp) + "/" + String(rate) + "/" + String(rate));
 }
 
 #if startTn == 0
@@ -1294,6 +1299,9 @@ void setup() {
 #endif
     BrewTempSensor.OnDataChanged(OnBrewSensorValuesUpdate);
 
+    BoilerTempSensor.Init(15,BoilerTempSensor.DALLAS);
+    BoilerTempSensor.OnDataChanged(OnBoilerSensorValuesUpdate);
+
     // Initialize PID controller
     bPID.SetSampleTime(windowSize);
     bPID.SetOutputLimits(0, windowSize);
@@ -1361,6 +1369,7 @@ void looppid() {
     }
 
     BrewTempSensor.RefreshSensorData(); // update temperature values
+    BoilerTempSensor.RefreshSensorData();
     testEmergencyStop();                // test if temp is too high
     bPID.Compute();                     // the variable pidOutput now has new values from PID (will be written to heater pin in ISR.cpp)
 
